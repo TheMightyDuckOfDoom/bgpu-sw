@@ -223,6 +223,64 @@ st.int32.global          r12,   r1
 stop
 """
 
+example_asm = """
+special                   r0, %param
+ld.int32.param            r1,   r0
+add.ri.int32              r2,   r0, 4
+ld.int32.param            r2,   r2
+add.ri.int32              r3,   r0, 8
+ld.int32.param            r3,   r3
+special                   r0, %gidx0
+special                   r4, %lidx0
+shl.ri.int32              r5,   r0,    4
+shl.ri.int32              r6,   r4,    2
+add.rr.int32              r7,   r5,   r6
+shl.ri.int32              r5,   r7,    2
+add.rr.int32              r5,   r2,   r5
+ld.int32.global           r6,   r5
+shl.ri.int32              r5,   r7,    2
+add.rr.int32              r5,   r3,   r5
+ld.int32.global           r8,   r5
+add.ri.int32              r5,   r7,    1
+shl.ri.int32              r9,   r5,    2
+add.rr.int32              r9,   r2,   r9
+ld.int32.global          r10,   r9
+shl.ri.int32              r9,   r5,    2
+add.rr.int32              r9,   r3,   r9
+ld.int32.global          r11,   r9
+add.ri.int32              r9,   r7,    2
+shl.ri.int32             r12,   r9,    2
+add.rr.int32             r12,   r2,  r12
+ld.int32.global          r13,  r12
+shl.ri.int32             r12,   r9,    2
+add.rr.int32             r12,   r3,  r12
+ld.int32.global          r14,  r12
+add.ri.int32             r12,   r7,    3
+shl.ri.int32             r15,  r12,    2
+add.rr.int32             r15,   r2,  r15
+ld.int32.global           r2,  r15
+shl.ri.int32             r15,  r12,    2
+add.rr.int32             r15,   r3,  r15
+ld.int32.global           r3,  r15
+shl.ri.int32             r15,   r5,    2
+add.rr.int32             r15,   r1,  r15
+shl.ri.int32              r5,   r9,    2
+add.rr.int32              r5,   r1,   r5
+shl.ri.int32              r9,  r12,    2
+add.rr.int32              r9,   r1,   r9
+shl.ri.int32             r12,   r7,    2
+add.rr.int32             r12,   r1,  r12
+add.rr.int32              r1,  r10,  r11
+st.int32.global          r15,   r1
+add.rr.int32              r1,  r13,  r14
+st.int32.global           r5,   r1
+add.rr.int32              r1,   r2,   r3
+st.int32.global           r9,   r1
+add.rr.int32              r1,   r6,   r8
+st.int32.global          r12,   r1
+stop
+"""
+
 if __name__ == "__main__":
     print("Assembling example ASM code...")
     hex_program = asm2hex(example_asm)

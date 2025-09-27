@@ -7,9 +7,70 @@ tblocks = 0
 DataPerMatrix = 0
 prog = []
 
-ex_prog = 'add_8'
+ex_prog = 'add_2'
 emu = False
 inorder = True
+
+if ex_prog == 'add_16':
+    DataPerMatrix = 16 ** 2
+    Tblocks = 16
+    prog = [
+        0x04000000, # special                   r0, %param
+        0x42010000, # ld.int32.param            r1,   r0
+        0x0c020004, # add.ri.int32              r2,   r0, 4
+        0x42020200, # ld.int32.param            r2,   r2
+        0x0c030008, # add.ri.int32              r3,   r0, 8
+        0x42030300, # ld.int32.param            r3,   r3
+        0x02000000, # special                   r0, %gidx0
+        0x00040000, # special                   r4, %lidx0
+        0x0e050004, # shl.ri.int32              r5,   r0,    4
+        0x0e060402, # shl.ri.int32              r6,   r4,    2
+        0x05070506, # add.rr.int32              r7,   r5,   r6
+        0x0e050702, # shl.ri.int32              r5,   r7,    2
+        0x05050205, # add.rr.int32              r5,   r2,   r5
+        0x42060500, # ld.int32.global           r6,   r5
+        0x0e050702, # shl.ri.int32              r5,   r7,    2
+        0x05050305, # add.rr.int32              r5,   r3,   r5
+        0x42080500, # ld.int32.global           r8,   r5
+        0x0c050701, # add.ri.int32              r5,   r7,    1
+        0x0e090502, # shl.ri.int32              r9,   r5,    2
+        0x05090209, # add.rr.int32              r9,   r2,   r9
+        0x420a0900, # ld.int32.global          r10,   r9
+        0x0e090502, # shl.ri.int32              r9,   r5,    2
+        0x05090309, # add.rr.int32              r9,   r3,   r9
+        0x420b0900, # ld.int32.global          r11,   r9
+        0x0c090702, # add.ri.int32              r9,   r7,    2
+        0x0e0c0902, # shl.ri.int32             r12,   r9,    2
+        0x050c020c, # add.rr.int32             r12,   r2,  r12
+        0x420d0c00, # ld.int32.global          r13,  r12
+        0x0e0c0902, # shl.ri.int32             r12,   r9,    2
+        0x050c030c, # add.rr.int32             r12,   r3,  r12
+        0x420e0c00, # ld.int32.global          r14,  r12
+        0x0c0c0703, # add.ri.int32             r12,   r7,    3
+        0x0e0f0c02, # shl.ri.int32             r15,  r12,    2
+        0x050f020f, # add.rr.int32             r15,   r2,  r15
+        0x42020f00, # ld.int32.global           r2,  r15
+        0x0e0f0c02, # shl.ri.int32             r15,  r12,    2
+        0x050f030f, # add.rr.int32             r15,   r3,  r15
+        0x42030f00, # ld.int32.global           r3,  r15
+        0x0e0f0502, # shl.ri.int32             r15,   r5,    2
+        0x050f010f, # add.rr.int32             r15,   r1,  r15
+        0x0e050902, # shl.ri.int32              r5,   r9,    2
+        0x05050105, # add.rr.int32              r5,   r1,   r5
+        0x0e090c02, # shl.ri.int32              r9,  r12,    2
+        0x05090109, # add.rr.int32              r9,   r1,   r9
+        0x0e0c0702, # shl.ri.int32             r12,   r7,    2
+        0x050c010c, # add.rr.int32             r12,   r1,  r12
+        0x05010a0b, # add.rr.int32              r1,  r10,  r11
+        0x450f0f01, # st.int32.global          r15,   r1
+        0x05010d0e, # add.rr.int32              r1,  r13,  r14
+        0x45050501, # st.int32.global           r5,   r1
+        0x05010203, # add.rr.int32              r1,   r2,   r3
+        0x45090901, # st.int32.global           r9,   r1
+        0x05010608, # add.rr.int32              r1,   r6,   r8
+        0x450c0c01, # st.int32.global          r12,   r1
+        0xff000000  # stop
+    ]
 
 if ex_prog == 'add_8':
     DataPerMatrix = 8 ** 2
@@ -224,7 +285,7 @@ class BGPUEmu:
                 self.te_status |= self.te_tblocks_to_dispatch << 24 # Number of finished TBlocks
             return
 
-        raise ValueError(f"Invalid address {address:#010x} for write operation")
+        raise ValueError(f"Invalid address {address:#010x} for write operation, max_memory address is {len(self.memory) - 1:#010x}")
 
     def read(self, address):
         if address % 4 != 0:
@@ -332,11 +393,19 @@ bgpu = BGPU(con)
 running = bgpu.dispatch_status()[1]
 assert not running, "GPU is already running, please stop it first."
 
+# for i in range(len(prog)):
+#     con.write(i * 4, prog[i], check=False)
+#     value = con.read(i * 4)
+#     print(f"Program {i}: {value:#010x} (expected {prog[i]:#010x})")
+
 offset = 0
 print("Writing program to memory:")
 for inst in prog:
     print(f"{offset:#010x} = {inst:#010x}")
-    con.write(offset, inst)
+    try:
+        con.write(offset, inst)
+    except ValueError as e:
+        print(f"Error writing instruction {inst:#010x} at offset {offset:#010x}: {e}")
     offset += 4
 
 print("Writing data to memory:")
