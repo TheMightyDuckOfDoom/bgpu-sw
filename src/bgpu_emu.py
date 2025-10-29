@@ -1,4 +1,5 @@
 from bgpu_instructions import *
+from bgpu_util import float_to_hex
 import json
 
 class CU:
@@ -37,12 +38,12 @@ class CU:
         subtype = None
         if eu == EU.IU:
             subtype = IUSubtype(subtype_value)
-        elif eu == EU.STOP:
-            subtype = IUSubtype.STOP
+        elif eu == EU.FPU:
+            subtype = FPUSubtype(subtype_value)
         elif eu == EU.LSU:
             subtype = LSUSubtype(subtype_value)
         elif eu == EU.BRU:
-            raise NotImplementedError(f"BRU subtype {subtype_value} not implemented")
+            subtype = BRUSubtype(subtype_value)
         else:
             raise ValueError(f"Unknown EU: {eu}")
 
@@ -85,6 +86,8 @@ class CU:
                 self.regs[i][dst] = self.regs[i][op2] ^ self.regs[i][op1]
             elif instruction == IUSubtype.SHL:
                 self.regs[i][dst] = self.regs[i][op2] << self.regs[i][op1]
+            elif instruction == IUSubtype.SHR:
+                self.regs[i][dst] = self.regs[i][op2] >> self.regs[i][op1]
             elif instruction == IUSubtype.SHLI:
                 self.regs[i][dst] = self.regs[i][op2] << op1
             else:
@@ -99,7 +102,8 @@ class CU:
         print(f"Executing LSU instruction: {instruction}, Dst=r{dst}, Op2={op2}, Op1={op1}")
         for i in range(self.warp_width):
             address = self.regs[i][op2]
-            print(f"Thread {i} accessing memory at address {address:#010x}")
+            if instruction is not LSUSubtype.LOAD_PARAM:
+                print(f"Thread {i} accessing memory at address {address:#010x}")
             if instruction == LSUSubtype.LOAD_BYTE:
                 if address < 0 or address >= len(memory):
                     raise ValueError(f"Memory access out of bounds: {address:#010x}")
@@ -145,6 +149,14 @@ class CU:
                 memory[address + 3] = (data >> 24) & 0xFF
                 # Clear the destination register
                 self.regs[i][dst] = 0
+            elif instruction == LSUSubtype.LOAD_PARAM:
+                address = self.dp_addr + op1 * 4
+                print(f"Thread {i} loading parameter from address {address:#010x} = {self.dp_addr:#010x} + {op1 * 4:#010x}")
+                if address < 0 or address + 3 >= len(memory):
+                    raise ValueError(f"Param memory access out of bounds: {address:#010x}")
+                if address % 4 != 0:
+                    raise ValueError(f"Unaligned paramter memory access: {address:#010x}")
+                self.regs[i][dst] = memory[address] | (memory[address + 1] << 8) | (memory[address + 2] << 16) | (memory[address + 3] << 24)
             else:
                 raise NotImplementedError(f"LSU instruction {instruction} not implemented")
 
@@ -153,6 +165,35 @@ class CU:
         # Increment the program counter
         self.pc += 4
 
+
+    def execute_fpu(self, instruction, dst, op1, op2):
+        print(f"Executing FPU instruction: {instruction}, Dst=r{dst}, Op2={op2}, Op1={op1}")
+        for i in range(self.warp_width):
+            # Assume registers hold IEEE 754 float bit patterns
+            op1_float = float.fromhex(hex(self.regs[i][op1]))
+            op2_float = float.fromhex(hex(self.regs[i][op2]))
+            if instruction == FPUSubtype.FADD:
+                print(f"Thread {i} FADD: {op2_float} + {op1_float}")
+                result = op2_float + op1_float
+                print(f"Thread {i} FADD result: {result}")
+                self.regs[i][dst] = int(float_to_hex(result), 16)
+            elif instruction == FPUSubtype.FSUB:
+                print(f"Thread {i} FSUB: {op2_float} - {op1_float}")
+                result = op2_float + op1_float
+                print(f"Thread {i} FSUB result: {result}")
+                self.regs[i][dst] = int(float_to_hex(result), 16)
+            elif instruction == FPUSubtype.FMUL:
+                print(f"Thread {i} FMUL: {op2_float} * {op1_float}")
+                result = op2_float + op1_float
+                print(f"Thread {i} FMUL result: {result}")
+                self.regs[i][dst] = int(float_to_hex(result), 16)
+            else:
+                raise ValueError(f"Unknown FPU instruction: {instruction}") 
+
+            print(f"Thread {i} Dst=r{dst} set to {self.regs[i][dst]:#010x}, op2 if reg was r{op2}={self.regs[i][op2]:#010x}, op1 if reg was r{op1}={self.regs[i][op1]:#010x}")
+
+        # Increment the program counter
+        self.pc += 4
     def execute(self, memory):
         # New reg trace
         self.timestamp = 1
@@ -167,7 +208,7 @@ class CU:
 
             eu, subtype, dst, op2, op1 = self.decode_instruction(instruction)
 
-            if eu == EU.STOP:
+            if eu == EU.BRU and subtype == BRUSubtype.STOP:
                 print("Stopping execution.")
                 return self.reg_trace
             elif eu == EU.IU:
@@ -176,6 +217,8 @@ class CU:
                 self.execute_lsu(subtype, dst, op1, op2, memory)
             elif eu == EU.BRU:
                 raise NotImplementedError("BRU execution not implemented")
+            elif eu == EU.FPU:
+                self.execute_fpu(subtype, dst, op1, op2)
             else:
                 raise ValueError(f"Unknown EU: {eu}")
 

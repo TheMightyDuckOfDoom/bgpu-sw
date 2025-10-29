@@ -13,13 +13,17 @@ class IUSubtype(Enum):
     OR = 0x08
     XOR = 0x09
     SHL = 0x0A
+    SHR = 0x0B
 
-    LDI = 0x0B
-    ADDI = 0x0C
-    SUBI = 0x0D
-    SHLI = 0x0E
+    LDI = 0x0C
+    ADDI = 0x0D
+    SUBI = 0x0E
+    ANDI = 0x0F
+    ORI = 0x10
+    XORI = 0x11
+    SHLI = 0x12
+    SHRI = 0x13
 
-    STOP = 0b111111
 
 class LSUSubtype(Enum):
     LOAD_BYTE = 0x00
@@ -30,14 +34,26 @@ class LSUSubtype(Enum):
     STORE_HALF = 0x04
     STORE_WORD = 0x05
 
+    LOAD_PARAM = 0x06
+
+class FPUSubtype(Enum):
+    FADD = 0x00
+    FSUB = 0x01
+    FMUL = 0x02
+
+class BRUSubtype(Enum):
+    BRNZ = 0x00
+    BRZ = 0x01
+    STOP = 0b111111
+
 class EU(Enum):
     IU  = 0
     LSU = 1
     BRU = 2
-    STOP = 3
+    FPU = 3
 
 def get_load_store_subtype(op1, op2, width, normal):
-    if width == "int32" or width == "uint32":
+    if width == "int32" or width == "uint32" or width == "float32":
         return normal[32]
     elif width == "int16" or width == "uint16":
         return normal[16]
@@ -46,43 +62,62 @@ def get_load_store_subtype(op1, op2, width, normal):
     else:
         raise ValueError(f"Invalid width: {width}. Expected one of: int32, uint32, int16, uint16, int8, uint8. Got: {width}")
 
+fpu_types = ["float32"]
+
 class OpCode(Enum):
-    SPECIAL = ("special", EU.IU, lambda op1, op2, width, is_ri: 
-               {"%param": IUSubtype.DPA, "%gidx0": IUSubtype.BID, "%lidx0": IUSubtype.TID}[op2] if op2 in {"%param", "%gidx0", "%lidx0"} else None)
-    LD = ("ld", EU.LSU, lambda op1, op2, width, is_ri:
-            get_load_store_subtype(op1, op2, width, {
+    SPECIAL = ("special", lambda op1, op2, width, is_ri, mod: 
+               (EU.IU, {"%param": IUSubtype.DPA, "%g": IUSubtype.BID, "%l": IUSubtype.TID}[op2] if op2 in {"%param", "%g", "%l"} else None))
+    LD = ("ld", lambda op1, op2, width, is_ri, mod:
+            (EU.LSU, get_load_store_subtype(op1, op2, width, {
                 32: LSUSubtype.LOAD_WORD,
                 16: LSUSubtype.LOAD_HALF,
                 8: LSUSubtype.LOAD_BYTE
-            }) if not is_ri else None)
-    ST = ("st", EU.LSU, lambda op1, op2, width, is_ri:
-            get_load_store_subtype(op1, op2, width, {
+            }) if not is_ri else None))
+    ST = ("st", lambda op1, op2, width, is_ri, mod:
+            (EU.LSU, get_load_store_subtype(op1, op2, width, {
                 32: LSUSubtype.STORE_WORD,
                 16: LSUSubtype.STORE_HALF,
                 8: LSUSubtype.STORE_BYTE
-            }) if not is_ri else None)
-    ADD = ("add", EU.IU, lambda op1, op2, width, is_ri: IUSubtype.ADDI if is_ri else IUSubtype.ADD)
-    SHL = ("shl", EU.IU, lambda op1, op2, width, is_ri: IUSubtype.SHLI if is_ri else IUSubtype.SHL)
-    STOP = ("stop", EU.STOP, IUSubtype.STOP)
+            }) if not is_ri else None))
+
+    LDPARAM = ("ldparam", lambda op1, op2, width, is_ri, mod: (EU.LSU, LSUSubtype.LOAD_PARAM))
+
+    ADD = ("add", lambda op1, op2, width, is_ri, mod: (EU.FPU, FPUSubtype.FADD) if width in fpu_types else (EU.IU, IUSubtype.ADDI if is_ri else IUSubtype.ADD))
+    SUB = ("sub", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.SUBI if is_ri else IUSubtype.SUB) if width not in fpu_types else None)
+    AND = ("and", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.ANDI if is_ri else IUSubtype.AND) if width not in fpu_types else None)
+    OR  = ("or", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.ORI if is_ri else IUSubtype.OR) if width not in fpu_types else None)
+    XOR = ("xor", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.XORI if is_ri else IUSubtype.XOR) if width not in fpu_types else None)
+    SHL = ("shl", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.SHLI if is_ri else IUSubtype.SHL) if width not in fpu_types else None)
+    SHR = ("shr", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.SHRI if is_ri else IUSubtype.SHR) if width not in fpu_types else None)
+    MOV = ("mov", lambda op1, op2, width, is_ri, mod: (EU.IU, IUSubtype.LDI if is_ri else IUSubtype.ADDI))
+
+    MUL = ("mul", lambda op1, op2, width, is_ri, mod: (EU.FPU, FPUSubtype.FMUL))
+
+    STOP = ("stop", lambda op1, op2, width, is_ri, mod: (EU.BRU, BRUSubtype.STOP))
+
+    BR = ("br", lambda op1, op2, width, is_ri, mod: (EU.BRU, BRUSubtype.BRNZ if "nz" in mod else BRUSubtype.BRZ))
+
 
 class Instruction:
-    def __init__(self, opcode: OpCode, dst: str, op1, op2, width, is_ri):
+    def __init__(self, opcode: OpCode, dst: str, op1, op2, width, is_ri, modifiers):
         self.text = opcode.value[0]
-        self.eu = opcode.value[1]
         self.dst = dst
         if opcode == OpCode.ST:
             self.op2 = dst
             self.op1 = op2
+        elif opcode == OpCode.LDPARAM or (opcode == OpCode.MOV and is_ri):
+            self.op1 = op2
+            self.op2 = op2
         else:
             self.op1 = op1
             self.op2 = op2
-        self.subtype = None
+        self.modifiers = modifiers
+        self.width = width
 
-        if len(opcode.value) > 2:
-            if callable(opcode.value[2]):
-                self.subtype = opcode.value[2](op1, op2, width, is_ri) 
-            else:
-                self.subtype = opcode.value[2]
+        eu_subtype = opcode.value[1](op1, op2, width, is_ri, modifiers)
+        assert eu_subtype is not None, f"Invalid opcode: {opcode.value[0]} with operands {op1}, {op2} and width {width}"
+        self.eu, self.subtype = eu_subtype
+        print(f"Computed EU: {self.eu}, Subtype: {self.subtype} for opcode {self.text}")
 
         assert self.subtype is not None, f"Invalid opcode: {opcode.value[0]} with operands {op1}, {op2} and width {width}"
 
@@ -121,7 +156,7 @@ class Instruction:
                 assert int(self.op1[1:]) >= 0, f"Operand 2 register must be non-negative: {self.op1}"
                 assert int(self.op1[1:]) < 256, f"Operand 2 register must be less than 256: {self.op1}"
                 enc |= int(self.op1[1:])
-            else:
+            elif 'f' not in self.op1:
                 assert int(self.op1) >= 0, f"Immediate value must be non-negative: {self.op1}"
                 assert int(self.op1) < 256, f"Immediate value must be less than 256: {self.op1}"
                 enc |= int(self.op1) & 0xFF  # Ensure it fits in

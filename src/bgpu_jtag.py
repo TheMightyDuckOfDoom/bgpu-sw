@@ -7,8 +7,8 @@ tblocks = 0
 DataPerMatrix = 0
 prog = []
 
-ex_prog = 'add_2'
-emu = False
+ex_prog = 'add_8'
+emu = True
 inorder = True
 
 if ex_prog == 'add_16':
