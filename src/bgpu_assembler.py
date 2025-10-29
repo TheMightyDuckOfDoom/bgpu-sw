@@ -1,157 +1,357 @@
-#!/usr/bin/env python3
-
+from util import ParsedInstruction, ModifierType, Modifier, OperandType, Operand
+from parser import Parser
 from bgpu_instructions import *
+from bgpu_util import float_to_hex
 
-def parse_instruction(line: str) -> Instruction:
-    print(f"Parsing line: {line.strip()}")
-    parts = line.split('#')[0].strip().split()
-    print(f"Parts: {parts}")
+class ValidInstruction:
+    def __init__(self, name: str, allowed_modifiers: list[list[ModifierType]], allowed_operands: list[list[OperandType]], enc_fun, transform_function=None):
+        self.name = name
+        self.allowed_modifiers = allowed_modifiers
+        self.allowed_operands = allowed_operands
+        self.enc_fun = enc_fun
+        self.transform_function = transform_function
 
-    if parts[0][-1] == ':':
-        # It's a label, skip
-        print(f"Found label: {parts[0]}")
+    def matches_name(self, name: str) -> bool:
+        return self.name == name
+
+    def is_valid(self, parsed_inst: ParsedInstruction) -> bool:
+        if parsed_inst.instruction != self.name:
+            return False
+
+        found_mod_groups = [0 for _ in self.allowed_modifiers]
+        for mod in parsed_inst.modifiers:
+            for idx, required_mods in enumerate(self.allowed_modifiers):
+                for req_mod_ty in required_mods:
+                    if mod.type == req_mod_ty:
+                        found_mod_groups[idx] += 1
+                        break
+
+        # Check if all required modifier groups are found
+        for idx, required_mods in enumerate(self.allowed_modifiers):
+            if found_mod_groups[idx] != 1:
+                return False
+        
+        # Check operands
+        if len(parsed_inst.operands) != len(self.allowed_operands):
+            return False
+
+        for i, op in enumerate(parsed_inst.operands):
+            operand_types = self.allowed_operands[i]
+            missmatch = False
+            if isinstance(operand_types, list):
+                if op.type not in operand_types:
+                    missmatch = True
+            else:
+                if op.type != operand_types:
+                    missmatch = True
+
+            if missmatch:
+                return False
+
+        return True
+
+    def transform(self, parsed_inst: ParsedInstruction) -> ParsedInstruction:
+        if self.transform_function is not None:
+            transformed = self.transform_function(parsed_inst)
+            if transformed is not None:
+                return transformed
+        return [parsed_inst]
+
+class AssemblerExecutionUnit:
+    def get_instructions(self) -> list[ValidInstruction]:
+        return self.instructions
+
+    def expand_instruction(self, parsed_inst: ParsedInstruction) -> list[ParsedInstruction]:
+        # Check if instruction is valid
+        for instr in self.instructions:
+            if instr.matches_name(parsed_inst.instruction):
+                if instr.is_valid(parsed_inst):
+                    expanded = instr.transform(parsed_inst)
+                    return expanded
+        return []
+    
+    def encode_instruction(self, parsed_inst: ParsedInstruction) -> int:
+        for instr in self.instructions:
+            if instr.matches_name(parsed_inst.instruction) and instr.is_valid(parsed_inst):
+                encoded = instr.enc_fun(parsed_inst)
+                if encoded is not None:
+                    return self.eu_enc << 30 | encoded
+                else:
+                    break
         return None
 
-    opcode_str = parts[0].split(".")[0]
-    opcode_modifiers = parts[0].split(".")[1:] if "." in parts[0] else []
+def encode_dest_reg(reg_operand: Operand) -> int:
+    assert reg_operand.type == OperandType.REGISTER, "Destination operand must be a register."
+    return (reg_operand.register & 0xFF) << 16
 
-    # opcode dst, op2, op1
+def encode_register(reg_operand: Operand, position: int) -> int:
+    assert reg_operand.type == OperandType.REGISTER, "Operand must be a register."
+    return (reg_operand.register & 0xFF) << (position * 8)
 
-    dst = parts[1].replace(",", "") if len(parts) > 1 else ""
-    op2 = parts[2].replace(",", "") if len(parts) > 2 else ""
-    op1 = parts[3].replace(",", "") if len(parts) > 3 else ""
+def encode_subtype(subtype) -> int:
+    return (subtype.value & 0x3F) << 24
 
-    width = None
-    print(f"Opcode modifiers: {opcode_modifiers}")
-    for modifier in opcode_modifiers:
-        if modifier in ["int32", "int16", "uint16", "int8", "uint8", "float32", "long"]:
-            assert width is None, "Multiple width modifiers specified"
-            width = modifier
+def encode_large_immediate(op) -> int:
+    assert op.type == OperandType.INT_IMMEDIATE, f"Operand must be an integer immediate.: {op}"
+    assert 0 <= op.immediate <= (1 << 16), f"Immediate value out of range. {op.immediate}"
+    return op.immediate & ((1 << 16) - 1)
 
-    is_ri = False
-    if "ri" in opcode_modifiers:
-        is_ri = True
-        if "rr" in opcode_modifiers:
-            raise ValueError("Cannot specify both 'ri' and 'rr' modifiers")
+def encode_small_immediate(op) -> int:
+    assert op.type == OperandType.INT_IMMEDIATE, "Operand must be an integer immediate."
+    assert 0 <= op.immediate <= (1 << 8), "Immediate value out of range."
+    return (op.immediate & 0xFF)
 
-    if opcode_str == "ldparam":
-        is_ri = True
 
-    for opcode in OpCode:
-        if opcode_str == opcode.value[0]:
-            return Instruction(opcode, dst, op1, op2, width, is_ri, opcode_modifiers)
+class AssemblerIntegerUnit(AssemblerExecutionUnit):
+    def encode_iu_alu(self, inst: ParsedInstruction, rr_subtype: IUSubtype, ri_subtype: IUSubtype) -> int:
+        dest = encode_dest_reg(inst.operands[0])
+        src1 = encode_register(inst.operands[1], 1)
+        sub = 0
+        if inst.is_rr():
+            src2 = encode_register(inst.operands[2], 0)
+            sub = encode_subtype(rr_subtype)
+        else:
+            src2 = encode_small_immediate(inst.operands[2])
+            sub = encode_subtype(ri_subtype)
+        return dest | src1 | src2 | sub
 
-    raise ValueError(f"Unknown opcode: {opcode_str}") 
+    def encode_special(self, inst: ParsedInstruction) -> int:
+        dest = encode_dest_reg(inst.operands[0])
+        assert inst.operands[1].type == OperandType.SPECIAL, "Second operand must be a special operand."
+        if inst.operands[1].special == "l":
+            subtype = IUSubtype.TID
+        elif inst.operands[1].special == "g":
+            subtype = IUSubtype.BID
+        else:
+            assert False, f"Unknown special operand: {inst.operands[1].special}"
+        return dest | encode_subtype(subtype)
 
-def asm2hex(asm_code: str) -> list[str]:
-    program = []
-    for line in asm_code.splitlines():
-        line = line.strip()
-        if line == "":
-            continue
-        inst = parse_instruction(line)
-        print(f"Parsed instruction: {inst}")
-        if inst is not None:
-            if isinstance(inst, list):
-                for i in inst:
-                    program.append((i, line))
-            else:
-                program.append((inst, line))
+    def expand_mov(self, parsed_inst: ParsedInstruction) -> list[ParsedInstruction]:
+        if parsed_inst.is_rr():
+            return None
 
-    for inst, line in program:
-        print(f"Instruction: {inst.encode()} {inst.text}, EU: {inst.eu}, Subtype: {inst.subtype}, Dst: {inst.dst}", end="")
-        if inst.op2 != "":
-            print(f", Op2: {inst.op2}", end="")
-        if inst.op1 != "":
-            print(f", Op1: {inst.op1}", end="")
-        print(" <- " + line)
+        imm_op = parsed_inst.operands[1]
+        dest_reg = parsed_inst.operands[0]
 
-    return [inst.encode() + " // " + line for inst, line in program]
+        type_mod = parsed_inst.get_dtype_modifiers()[0]
+        if imm_op.type == OperandType.FLOAT_IMMEDIATE:
+            imm_op.type = OperandType.INT_IMMEDIATE
+            imm_op.immediate = int(float_to_hex(imm_op.immediate), 16)
+            type_mod = Modifier("int32")
+
+        # Check if the immediate fits in 16 bits
+        if 0 <= imm_op.immediate <= 0xFFFF:
+            return None
+
+        # Split into multiple instructions
+        inst_mod = [Modifier("ri"), type_mod]
+        instructions = []
+        upper_value = (imm_op.immediate >> 16) & 0xFFFF
+        instructions.append(ParsedInstruction("mov", inst_mod, [dest_reg, Operand(str(upper_value))], parsed_inst.source_line, parsed_inst.label))
+        instructions.append(ParsedInstruction("shl", inst_mod, [dest_reg, dest_reg, Operand(str(8))], parsed_inst.source_line))
+
+        next_8_bits = (imm_op.immediate >> 8) & 0xFF
+        instructions.append(ParsedInstruction("or", inst_mod, [dest_reg, dest_reg, Operand(str(next_8_bits))], parsed_inst.source_line))
+        instructions.append(ParsedInstruction("shl", inst_mod, [dest_reg, dest_reg, Operand(str(8))], parsed_inst.source_line))
+
+        last_8_bits = imm_op.immediate & 0xFF
+        instructions.append(ParsedInstruction("or", inst_mod, [dest_reg, dest_reg, Operand(str(last_8_bits))], parsed_inst.source_line))
+
+        return instructions
+
+    def __init__(self):
+        self.name = "IU"
+        self.eu_enc = 0
+        self.instructions = [
+            ValidInstruction("mov", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.FDTYPE]], [OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE, OperandType.FLOAT_IMMEDIATE]],
+                lambda inst: 
+                    (encode_dest_reg(inst.operands[0]) | encode_large_immediate(inst.operands[1]) | encode_subtype(IUSubtype.LDI)) if inst.is_ri() else None, lambda inst: self.expand_mov(inst)),
+            ValidInstruction("add", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.ADD, IUSubtype.ADDI)),
+            ValidInstruction("sub", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SUB, IUSubtype.SUBI)),
+            ValidInstruction("shl", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SHL, IUSubtype.SHLI)),
+            ValidInstruction("shr", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SHR, IUSubtype.SHRI)),
+            ValidInstruction("and", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.AND, IUSubtype.ANDI)),
+            ValidInstruction("or", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.OR, IUSubtype.ORI)),
+            ValidInstruction("mul", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.MUL, IUSubtype.MULI)),
+            ValidInstruction("special", [], [OperandType.REGISTER, OperandType.SPECIAL], lambda inst: self.encode_special(inst)),
+        ]
+
+class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
+    def encode_ld(self, inst: ParsedInstruction) -> int:
+        dest = encode_dest_reg(inst.operands[0])
+        addr = encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0)
+        subtype = None
+        assert len(inst.get_dtype_modifiers()) == 1, "Load instruction must have one data type modifier."
+        width = inst.get_dtype_modifiers()[0].get_dtype_width()
+        if width == 1:
+            subtype = LSUSubtype.LOAD_BYTE
+        elif width == 2:
+            subtype = LSUSubtype.LOAD_HALF
+        elif width == 4:
+            subtype = LSUSubtype.LOAD_WORD
+        else:
+            assert False, f"Invalid data width for load instruction: {width}"
+        return dest | addr | encode_subtype(subtype)
+
+    def encode_st(self, inst: ParsedInstruction) -> int:
+        dest = encode_dest_reg(inst.operands[0])
+        addr = encode_register(inst.operands[0], 1) | encode_register(inst.operands[1], 0)
+        subtype = None
+        assert len(inst.get_dtype_modifiers()) == 1, "Store instruction must have one data type modifier."
+        width = inst.get_dtype_modifiers()[0].get_dtype_width()
+        if width == 1:
+            subtype = LSUSubtype.STORE_BYTE
+        elif width == 2:
+            subtype = LSUSubtype.STORE_HALF
+        elif width == 4:
+            subtype = LSUSubtype.STORE_WORD
+        else:
+            assert False, f"Invalid data width for store instruction: {width}"
+        return dest | addr | encode_subtype(subtype)
+
+    def __init__(self):
+        self.name = "LSU"
+        self.eu_enc = 1
+        self.instructions = [
+            ValidInstruction("ldparam", [], [OperandType.REGISTER, OperandType.INT_IMMEDIATE],
+                lambda inst: encode_subtype(LSUSubtype.LOAD_PARAM) | encode_dest_reg(inst.operands[0]) | encode_large_immediate(inst.operands[1])),
+            ValidInstruction("ld", [[ModifierType.IDTYPE, ModifierType.FDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_ld(inst)),
+            ValidInstruction("st", [[ModifierType.IDTYPE, ModifierType.FDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_st(inst)),
+        ]
+
+class AssemblerBranchUnit(AssemblerExecutionUnit):
+    def __init__(self):
+        self.name = "BRU"
+        self.eu_enc = 2
+        self.instructions = [
+            ValidInstruction("stop", [], [], lambda inst: 0x3F << 24),
+            ValidInstruction("br", [[ModifierType.CONDITION], [ModifierType.LABEL]], [OperandType.REGISTER], lambda inst: None),
+        ]
+
+class AssemblerFPUnit(AssemblerExecutionUnit):
+    def __init__(self):
+        self.name = "FPU"
+        self.eu_enc = 3
+        self.instructions = [
+            ValidInstruction("add", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FADD)),
+            ValidInstruction("sub", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FSUB)),
+            ValidInstruction("mul", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FMUL)),
+            ValidInstruction("max", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FMAX)),
+            ValidInstruction("exp2", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FEXP2)),
+            ValidInstruction("log2", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FLOG2)),
+            ValidInstruction("recip", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FRECIP)),
+        ]
+
+class BGPUAssembler():
+    def __init__(self):
+        self.parser = Parser()
+        self.executions_units = [AssemblerIntegerUnit(), AssemblerLoadStoreUnit(), AssemblerBranchUnit(), AssemblerFPUnit()]
+
+    def expand_instruction(self, parsed_inst: ParsedInstruction) -> list[ParsedInstruction]:
+        expand = []
+        for eu in self.executions_units:
+            expand = eu.expand_instruction(parsed_inst)
+            if expand != []:
+                return expand
+
+        assert False, f"Could not expand instruction: {parsed_inst}"
+
+    def assemble_file(self, filepath: str) -> bytearray:
+        return self.assemble(self.parser.parse_file(filepath))
+
+    def assemble_lines(self, lines: list[str]) -> bytearray:
+        return self.assemble(self.parser.parse_lines(lines))
+
+    def assemble(self, parsed_instructions: list[ParsedInstruction]) -> bytearray:
+        # exapand instructions
+        expanded_instructions = []
+        for parsed_inst in parsed_instructions:
+            print(f"Expanding instruction: {parsed_inst}")
+            expanded_instructions.extend(self.expand_instruction(parsed_inst))
+
+        print("Expanded instructions:")
+        for inst in expanded_instructions:
+            print(inst)
+
+        # Encode instructions
+        machine_code = bytearray()
+        for inst in expanded_instructions:
+            print(f"Encoding instruction: {str(inst)}")
+            encoded = False
+            for eu in self.executions_units:
+                enc_inst = eu.encode_instruction(inst)
+                if enc_inst is not None:
+                    bytecode = enc_inst.to_bytes(4, byteorder='little')
+                    machine_code.extend(bytecode)
+                    encoded = True
+                    print(f"Encoded instruction to machine code: 0x{enc_inst.to_bytes(4, byteorder='big').hex()}")
+                    break
+            if not encoded:
+                raise ValueError(f"Could not encode instruction: {inst}")
+
+        for i, byte in enumerate(machine_code):
+            print(f"Byte {i}: 0x{byte:02X}")
+
+        # Output machine code
+        return machine_code
 
 example_asm = """
-r_4_2_2_4_8:
-        ldparam   r0, 0 # define global
-        ldparam   r1, 1 # define global
-        ldparam   r2, 2 # define global
-        mov.ri.float32  r3, 0 # define register
-        mov.ri.float32    r4, 0f00000000 # constant
-        mov.ri.int32      r5, 1 # constant
-        mov.ri.long       r6, 1 # constant
-        mov.ri.int32      r7, 2 # constant
-        mov.ri.long       r8, 2 # constant
-        mov.ri.int32      r9, 3 # constant
-        mov.ri.long      r10, 3 # constant
-        mov.ri.int32     r11, 4 # constant
-        special                  r12, %g
-        special                  r13, %l
-        mov.ri.long      r14, 4 # constant
-        mov.ri.int32     r15, 8 # constant
-        mov.rr                    r3,   r4 # store register into register
-        add.rr.int32             r16,   r3,   r5 # index
-        mov.rr                    r3,   r4 # store register into register
-        add.rr.int32             r17,   r3,   r7 # index
-        mov.rr                    r3,   r4 # store register into register
-        add.rr.int32             r18,   r3,   r9 # index
-        mov.rr                    r3,   r4 # store register into register
-        shl.rr.long              r19,  r12,  r14
-        shr.rr.int32             r20,  r13,   r5
-        shl.rr.long              r21,  r20,   r8
-        and.rr.int32             r22,  r13,   r5
-        shl.rr.int32             r23,  r22,   r9
-        add.rr.long              r24,  r19,  r23
-        mov.ri.int32             r25,    0 # init range
-loop_r25:
-        add.rr.long              r26,  r24,  r25
-        add.rr.int32             r27,   r1,  r26 # index
-        ld.float32.global                r28,  r27
-        shl.rr.int32             r29,  r25,   r9
-        add.rr.long              r30,  r21,  r29
-        add.rr.int32             r31,   r2,  r30 # index
-        ld.float32.global                r32,  r31
-        add.rr.long              r33,  r30,   r6
-        add.rr.int32             r34,   r2,  r33 # index
-        ld.float32.global                r35,  r34
-        add.rr.long              r36,  r30,   r8
-        add.rr.int32             r37,   r2,  r36 # index
-        ld.float32.global                r38,  r37
-        add.rr.long              r39,  r30,  r10
-        add.rr.int32             r40,   r2,  r39 # index
-        ld.float32.global                r41,  r40
-        mul.rr.float32           r42,  r28,  r35
-        add.rr.float32           r43,   r3,  r42
-        mov.rr                    r3,  r43 # store register into register
-        mul.rr.float32           r44,  r28,  r38
-        add.rr.float32           r45,   r3,  r44
-        mov.rr                    r3,  r45 # store register into register
-        mul.rr.float32           r46,  r28,  r41
-        add.rr.float32           r47,   r3,  r46
-        mov.rr                    r3,  r47 # store register into register
-        mul.rr.float32           r48,  r28,  r32
-        add.rr.float32           r49,   r3,  r48
-        mov.rr                    r3,  r49 # store register into register
-checkloop_r25:
-        add.ri.int32             r25,  r25,    1 # increment
-        sub.rr.int32             r50,  r25,  r15 # compare bound
-        br.nz.loop_r25           r50 # loop back if not done
-endloop_r25:
-        add.rr.long              r50,  r24,  r21
-        add.rr.int32             r51,   r0,  r50 # index
-        st.float32.global                r51,   r3
-        add.rr.long              r52,  r50,   r6
-        add.rr.int32             r53,   r0,  r52 # index
-        st.float32.global                r53,   r3
-        add.rr.long              r54,  r50,   r8
-        add.rr.int32             r55,   r0,  r54 # index
-        st.float32.global                r55,   r3
-        add.rr.long              r56,  r50,  r10
-        add.rr.int32             r57,   r0,  r56 # index
-        st.float32.global                r57,   r3
-        stop
+E_4:
+	ldparam.int32   r0, 0 # define global
+	ldparam.int32   r1, 1 # define global
+	ldparam.int32   r2, 2 # define global
+	mov.ri.int32	  r3, 0 # constant
+	mov.ri.int32	  r4, 1 # constant
+	mov.ri.int32	  r5, 2 # constant
+	mov.ri.int32	  r6, 3 # constant
+	shl.ri.int32		  r7,   r3, 2 # index shift
+	add.rr.int32		  r7,   r1,   r7 # index
+	ld.int32.global		  r8,   r7
+	shl.ri.int32		  r9,   r4, 2 # index shift
+	add.rr.int32		  r9,   r1,   r9 # index
+	ld.int32.global		 r10,   r9
+	shl.ri.int32		 r11,   r5, 2 # index shift
+	add.rr.int32		 r11,   r1,  r11 # index
+	ld.int32.global		 r12,  r11
+	shl.ri.int32		 r13,   r6, 2 # index shift
+	add.rr.int32		 r13,   r1,  r13 # index
+	ld.int32.global		 r14,  r13
+	shl.ri.int32		 r15,   r3, 2 # index shift
+	add.rr.int32		 r15,   r2,  r15 # index
+	ld.int32.global		 r16,  r15
+	shl.ri.int32		 r17,   r4, 2 # index shift
+	add.rr.int32		 r17,   r2,  r17 # index
+	ld.int32.global		 r18,  r17
+	shl.ri.int32		 r19,   r5, 2 # index shift
+	add.rr.int32		 r19,   r2,  r19 # index
+	ld.int32.global		 r20,  r19
+	shl.ri.int32		 r21,   r6, 2 # index shift
+	add.rr.int32		 r21,   r2,  r21 # index
+	ld.int32.global		 r22,  r21
+	shl.ri.int32		 r23,   r3, 2 # index shift
+	add.rr.int32		 r23,   r0,  r23 # index
+	shl.ri.int32		 r24,   r4, 2 # index shift
+	add.rr.int32		 r24,   r0,  r24 # index
+	shl.ri.int32		 r25,   r5, 2 # index shift
+	add.rr.int32		 r25,   r0,  r25 # index
+	shl.ri.int32		 r26,   r6, 2 # index shift
+	add.rr.int32		 r26,   r0,  r26 # index
+	shl.rr.int32		 r27,  r16,   r4
+	add.rr.int32		 r28,   r8,  r27
+	st.int32.global		 r23,  r28
+	shl.rr.int32		 r29,  r18,   r4
+	add.rr.int32		 r30,  r10,  r29
+	st.int32.global		 r24,  r30
+	shl.rr.int32		 r31,  r20,   r4
+	add.rr.int32		 r32,  r12,  r31
+	st.int32.global		 r25,  r32
+	shl.rr.int32		 r33,  r22,   r4
+	add.rr.int32		 r34,  r14,  r33
+	st.int32.global		 r26,  r34
+	stop
 """
 
 if __name__ == "__main__":
     print("Assembling example ASM code...")
-    hex_program = asm2hex(example_asm)
-    for addr, hex_inst in enumerate(hex_program):
-        print(f"{addr:04x}: {hex_inst}")
+    code = BGPUAssembler().assemble_lines(example_asm.splitlines())
     print("Done.")

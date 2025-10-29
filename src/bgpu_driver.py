@@ -10,7 +10,8 @@ class EmulatorMemory:
         # Find next available address -> outside memory
         addr = len(self.mem)
         # Expand memory
-        self.mem.extend([0] * size)
+        size_in_mem = size + (4 - (size % 4)) % 4  # align to 4 bytes
+        self.mem.extend([0] * size_in_mem)
         # Record allocation
         buf = (addr, size)
         self.allocations.append(buf)
@@ -54,7 +55,7 @@ class BGPUDriver:
 
         # Allocate memory for the kernel
         arg_bufs = args[0]
-        kernel_len = len(program) * 4  # assuming 4 bytes per instruction
+        kernel_len = len(program)
         allocate_len = kernel_len + len(arg_bufs) * 4 # assuming 4 bytes per argument -> pointer size
         kernel_mem = self.mem.alloc(allocate_len)
         kernel_address = kernel_mem[0]
@@ -63,12 +64,8 @@ class BGPUDriver:
         
         # Copy program
         for i, instr in enumerate(program):
-            split_instr = instr.strip().split('//')[0]
-            print(f"Instruction {i}: {split_instr}")
-            bytes = int(split_instr, 16).to_bytes(4, byteorder='little')
-            for j in range(4):
-                print(f"  Byte {j}: {bytes[j]:#04x}")
-                kernel_bytes[i*4 + j] = bytes[j]
+            kernel_bytes[i] = instr
+            print(f"Kernel Byte {i}: {instr:#04x}")
 
         # Copy arguments
         parameter_address = kernel_len

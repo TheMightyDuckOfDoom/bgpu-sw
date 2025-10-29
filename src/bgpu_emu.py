@@ -1,6 +1,7 @@
 from bgpu_instructions import *
-from bgpu_util import float_to_hex
+from bgpu_util import float_to_hex, hex_to_float
 import json
+import math
 
 class CU:
     def __init__(self, warp_width=4):
@@ -80,16 +81,24 @@ class CU:
                 self.regs[i][dst] = op2 << 8 | op1
             elif instruction == IUSubtype.OR:
                 self.regs[i][dst] = self.regs[i][op2] | self.regs[i][op1]
+            elif instruction == IUSubtype.ORI:
+                self.regs[i][dst] = self.regs[i][op2] | op1
             elif instruction == IUSubtype.AND:
                 self.regs[i][dst] = self.regs[i][op2] & self.regs[i][op1]
             elif instruction == IUSubtype.XOR:
                 self.regs[i][dst] = self.regs[i][op2] ^ self.regs[i][op1]
             elif instruction == IUSubtype.SHL:
                 self.regs[i][dst] = self.regs[i][op2] << self.regs[i][op1]
-            elif instruction == IUSubtype.SHR:
-                self.regs[i][dst] = self.regs[i][op2] >> self.regs[i][op1]
             elif instruction == IUSubtype.SHLI:
                 self.regs[i][dst] = self.regs[i][op2] << op1
+            elif instruction == IUSubtype.SHR:
+                self.regs[i][dst] = self.regs[i][op2] >> self.regs[i][op1]
+            elif instruction == IUSubtype.SHRI:
+                self.regs[i][dst] = self.regs[i][op2] >> op1
+            elif instruction == IUSubtype.MUL:
+                self.regs[i][dst] = self.regs[i][op2] * self.regs[i][op1]
+            elif instruction == IUSubtype.MULI:
+                self.regs[i][dst] = self.regs[i][op2] * op1
             else:
                 raise ValueError(f"Unknown IU instruction: {instruction}") 
 
@@ -170,25 +179,41 @@ class CU:
         print(f"Executing FPU instruction: {instruction}, Dst=r{dst}, Op2={op2}, Op1={op1}")
         for i in range(self.warp_width):
             # Assume registers hold IEEE 754 float bit patterns
-            op1_float = float.fromhex(hex(self.regs[i][op1]))
-            op2_float = float.fromhex(hex(self.regs[i][op2]))
+            op1_float = hex_to_float(self.regs[i][op1])
+            op2_float = hex_to_float(self.regs[i][op2])
+            result = 0.0
             if instruction == FPUSubtype.FADD:
                 print(f"Thread {i} FADD: {op2_float} + {op1_float}")
                 result = op2_float + op1_float
                 print(f"Thread {i} FADD result: {result}")
-                self.regs[i][dst] = int(float_to_hex(result), 16)
             elif instruction == FPUSubtype.FSUB:
                 print(f"Thread {i} FSUB: {op2_float} - {op1_float}")
-                result = op2_float + op1_float
+                result = op2_float - op1_float
                 print(f"Thread {i} FSUB result: {result}")
-                self.regs[i][dst] = int(float_to_hex(result), 16)
             elif instruction == FPUSubtype.FMUL:
                 print(f"Thread {i} FMUL: {op2_float} * {op1_float}")
-                result = op2_float + op1_float
+                result = op2_float * op1_float
                 print(f"Thread {i} FMUL result: {result}")
-                self.regs[i][dst] = int(float_to_hex(result), 16)
+            elif instruction == FPUSubtype.FMAX:
+                print(f"Thread {i} FMAX: {op2_float} {op1_float}")
+                result = op2_float if op2_float > op1_float else op1_float
+                print(f"Thread {i} FMAX result: {result}")
+            elif instruction == FPUSubtype.FEXP2:
+                print(f"Thread {i} FEXP2: 2^{op1_float}")
+                result = 2.0 ** op1_float
+                print(f"Thread {i} FEXP2 result: {result}")
+            elif instruction == FPUSubtype.FRECIP:
+                print(f"Thread {i} FRECIP: 1 / {op1_float}")
+                result = 1.0 / op1_float
+                print(f"Thread {i} FRECIP result: {result}")
+            elif instruction == FPUSubtype.FLOG2:
+                print(f"Thread {i} FLOG2: log2({op1_float})")
+                result = math.log2(op1_float)
+                print(f"Thread {i} FLOG2 result: {result}")
             else:
                 raise ValueError(f"Unknown FPU instruction: {instruction}") 
+
+            self.regs[i][dst] = int(float_to_hex(result), 16)
 
             print(f"Thread {i} Dst=r{dst} set to {self.regs[i][dst]:#010x}, op2 if reg was r{op2}={self.regs[i][op2]:#010x}, op1 if reg was r{op1}={self.regs[i][op1]:#010x}")
 
