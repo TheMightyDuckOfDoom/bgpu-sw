@@ -128,7 +128,7 @@ class AssemblerIntegerUnit(AssemblerExecutionUnit):
 
     def expand_mov(self, parsed_inst: ParsedInstruction) -> list[ParsedInstruction]:
         if parsed_inst.is_rr():
-            return None
+            return [ParsedInstruction("add", [Modifier("ri"), Modifier("int32")], parsed_inst.operands[:2] + [Operand(str(0))], parsed_inst.source_line, parsed_inst.label)]
 
         imm_op = parsed_inst.operands[1]
         dest_reg = parsed_inst.operands[0]
@@ -174,6 +174,7 @@ class AssemblerIntegerUnit(AssemblerExecutionUnit):
             ValidInstruction("or", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.OR, IUSubtype.ORI)),
             ValidInstruction("mul", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.MUL, IUSubtype.MULI)),
             ValidInstruction("special", [], [OperandType.REGISTER, OperandType.SPECIAL], lambda inst: self.encode_special(inst)),
+            ValidInstruction("cmplt", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPLT, IUSubtype.CMPLTI) if inst.get_dtype_modifiers()[0].value == "int32" else None),
         ]
 
 class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
@@ -220,12 +221,41 @@ class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
         ]
 
 class AssemblerBranchUnit(AssemblerExecutionUnit):
+    def encode_branch(self, inst: ParsedInstruction) -> int:
+        assert self.label_addresses is not None, "Label addresses not set in Branch Unit."
+        assert inst.addr is not None, "Instruction address not set."
+        assert inst.has_modifier(ModifierType.LABEL), "Branch instruction must have a label operand."
+        assert inst.has_modifier(ModifierType.CONDITION), "Branch instruction must have a condition modifier."
+
+        label_mods = inst.get_label_modifiers()
+        assert len(label_mods) == 1, "Branch instruction must have exactly one label"
+        label_mod = label_mods[0]
+
+        dest_addr = self.label_addresses.get(label_mod.value, None)
+        assert dest_addr is not None, f"Label not found: {label_mod.value}"
+        offset = dest_addr - (inst.addr + 1)
+
+        cond_mods = inst.get_condition_modifiers()
+        assert len(cond_mods) == 1, "Branch instruction must have exactly one condition"
+
+        subtype = None
+        cond_mod = cond_mods[0]
+        if cond_mod.value == "nz":
+            subtype = BRUSubtype.BRNZ
+        if cond_mod.value == "ez":
+            subtype = BRUSubtype.BRZ
+        assert subtype is not None, f"Unknown branch condition modifier: {cond_mod.value}"
+
+        return encode_subtype(subtype) | encode_register(inst.operands[0], 1) | encode_small_immediate(Operand(str(offset)))
+
     def __init__(self):
         self.name = "BRU"
+        self.label_addresses = None
         self.eu_enc = 2
         self.instructions = [
-            ValidInstruction("stop", [], [], lambda inst: 0x3F << 24),
-            ValidInstruction("br", [[ModifierType.CONDITION], [ModifierType.LABEL]], [OperandType.REGISTER], lambda inst: None),
+            ValidInstruction("stop", [], [], lambda inst: encode_subtype(BRUSubtype.STOP)),
+            ValidInstruction("sync", [[ModifierType.SYNC_DOMAIN]], [], lambda inst: encode_subtype(BRUSubtype.SYNC_THREADS) if inst.modifiers[0].value == 'threads' else None),
+            ValidInstruction("br", [[ModifierType.CONDITION], [ModifierType.LABEL]], [OperandType.REGISTER], lambda inst: self.encode_branch(inst)),
         ]
 
 class AssemblerFPUnit(AssemblerExecutionUnit):
@@ -240,6 +270,7 @@ class AssemblerFPUnit(AssemblerExecutionUnit):
             ValidInstruction("exp2", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FEXP2)),
             ValidInstruction("log2", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FLOG2)),
             ValidInstruction("recip", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FRECIP)),
+            ValidInstruction("cmplt", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FCMPLT)),
         ]
 
 class BGPUAssembler():
@@ -254,6 +285,11 @@ class BGPUAssembler():
             if expand != []:
                 return expand
 
+        print(f"Failed to expand instruction: {parsed_inst}:")
+        for op in parsed_inst.operands:
+            print(f"  Operand: {op.type}")
+        for mod in parsed_inst.modifiers:
+            print(f"  Modifier: {mod.type}")
         assert False, f"Could not expand instruction: {parsed_inst}"
 
     def assemble_file(self, filepath: str) -> bytearray:
@@ -272,6 +308,21 @@ class BGPUAssembler():
         print("Expanded instructions:")
         for inst in expanded_instructions:
             print(inst)
+
+        # Search for labels
+        label_addresses = {}
+        for addr, inst in enumerate(expanded_instructions):
+            inst.addr = addr
+            if inst.label is not None:
+                label_addresses[inst.label] = addr
+
+        # Print labels
+        print("Labels found:")
+        for label, addr in label_addresses.items():
+            print(f"  {label}: {addr}")
+
+        # Push label to BRU
+        self.executions_units[2].label_addresses = label_addresses
 
         # Encode instructions
         machine_code = bytearray()

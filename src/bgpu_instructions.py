@@ -26,6 +26,9 @@ class IUSubtype(Enum):
     SHRI = 0x14
     MULI = 0x15
 
+    CMPLT = 0x16
+    CMPLTI = 0x17
+
 class LSUSubtype(Enum):
     LOAD_BYTE = 0x00
     LOAD_HALF = 0x01
@@ -45,10 +48,12 @@ class FPUSubtype(Enum):
     FEXP2 = 0x04
     FLOG2 = 0x05
     FRECIP = 0x06
+    FCMPLT = 0x07
 
 class BRUSubtype(Enum):
     BRNZ = 0x00
     BRZ = 0x01
+    SYNC_THREADS = 0x02
     STOP = 0b111111
 
 class EU(Enum):

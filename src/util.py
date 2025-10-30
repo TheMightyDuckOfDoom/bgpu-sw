@@ -17,6 +17,9 @@ class Operand:
             assert value[1:].isdigit(), f"Invalid register format: {value}"
             self.register = int(value[1:])
             assert 0 <= self.register <= 255, f"Register out of range: {self.register}"
+        elif value.endswith('U') and (value[:-1].isdigit() or (value[:-1].startswith('-') and value[1:-1].isdigit())):
+            self.type = OperandType.INT_IMMEDIATE
+            self.immediate = int(value[:-1])
         elif value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
             self.type = OperandType.INT_IMMEDIATE
             self.immediate = int(value)
@@ -52,11 +55,13 @@ class ModifierType(Enum):
     CONDITION = 4
     LABEL = 5
     FDTYPE = 6
+    BDTYPE = 7
+    SYNC_DOMAIN = 8
 
 class Modifier:
     def __init__(self, value: str):
         self.value = value
-        if value in ["int32", "int16", "uint16", "int8", "uint8", "long"]:
+        if value in ["int32", "uint32", "int16", "uint16", "int8", "uint8", "long"]:
             self.type = ModifierType.IDTYPE
         elif value in ["float32"]:
             self.type = ModifierType.FDTYPE
@@ -66,15 +71,17 @@ class Modifier:
             self.type = ModifierType.REGISTER_IMMEDIATE
         elif value in ["global", "param"]:
             self.type = ModifierType.MEMORY_TYPE
-        elif value in ["eq", "nz"]:
+        elif value in ["ez", "nz"]:
             self.type = ModifierType.CONDITION
+        elif value == "bool":
+            self.type = ModifierType.BDTYPE
+        elif value in ['threads']:
+            self.type = ModifierType.SYNC_DOMAIN
         else:
             self.type = ModifierType.LABEL
 
     def get_dtype_width(self) -> int:
-        if self.value == "int32" or self.value == "float32":
-            return 4
-        elif self.value == "long":
+        if self.value == "int32" or self.value == "float32" or self.value == "uint32" or self.value == "long":
             return 4
         elif self.value == "int16" or self.value == "uint16":
             return 2
@@ -90,6 +97,7 @@ class ParsedInstruction:
         self.modifiers = modifiers
         self.source_line = source_line
         self.label = label
+        self.addr = None  # to be filled in later during assembly
 
     def __str__(self):
         mods = '.'.join([mod.value for mod in self.modifiers])
@@ -105,12 +113,21 @@ class ParsedInstruction:
                 return True
         return False
 
-    def get_dtype_modifiers(self) -> list[Modifier]:
+    def find_modifiers(self, mod_type: ModifierType) -> list[Modifier]:
         mods = []
         for mod in self.modifiers:
-            if mod.type == ModifierType.IDTYPE or mod.type == ModifierType.FDTYPE:
+            if mod.type == mod_type:
                 mods.append(mod)
         return mods
+
+    def get_condition_modifiers(self) -> list[Modifier]:
+        return self.find_modifiers(ModifierType.CONDITION)
+
+    def get_label_modifiers(self) -> list[Modifier]:
+        return self.find_modifiers(ModifierType.LABEL)
+
+    def get_dtype_modifiers(self) -> list[Modifier]:
+        return self.find_modifiers(ModifierType.IDTYPE) + self.find_modifiers(ModifierType.FDTYPE) + self.find_modifiers(ModifierType.BDTYPE)
 
     def is_ri(self) -> bool:
         for mod in self.modifiers:
