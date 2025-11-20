@@ -28,6 +28,10 @@ class IUSubtype(Enum):
 
     CMPLT = 0x16
     CMPLTI = 0x17
+    CMPNE = 0x18
+    CMPNEI = 0x19
+
+    MAX = 0x1A
 
 class LSUSubtype(Enum):
     LOAD_BYTE = 0x00

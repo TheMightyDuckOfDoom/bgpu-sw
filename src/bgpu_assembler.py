@@ -163,18 +163,21 @@ class AssemblerIntegerUnit(AssemblerExecutionUnit):
         self.name = "IU"
         self.eu_enc = 0
         self.instructions = [
-            ValidInstruction("mov", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.FDTYPE]], [OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE, OperandType.FLOAT_IMMEDIATE]],
+            ValidInstruction("mov", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.FDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE, OperandType.FLOAT_IMMEDIATE]],
                 lambda inst: 
                     (encode_dest_reg(inst.operands[0]) | encode_large_immediate(inst.operands[1]) | encode_subtype(IUSubtype.LDI)) if inst.is_ri() else None, lambda inst: self.expand_mov(inst)),
             ValidInstruction("add", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.ADD, IUSubtype.ADDI)),
             ValidInstruction("sub", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SUB, IUSubtype.SUBI)),
             ValidInstruction("shl", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SHL, IUSubtype.SHLI)),
             ValidInstruction("shr", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.SHR, IUSubtype.SHRI)),
-            ValidInstruction("and", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.AND, IUSubtype.ANDI)),
-            ValidInstruction("or", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.OR, IUSubtype.ORI)),
+            ValidInstruction("and", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.AND, IUSubtype.ANDI)),
+            ValidInstruction("or", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.OR, IUSubtype.ORI)),
+            ValidInstruction("xor", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.XOR, IUSubtype.XORI)),
             ValidInstruction("mul", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.MUL, IUSubtype.MULI)),
             ValidInstruction("special", [], [OperandType.REGISTER, OperandType.SPECIAL], lambda inst: self.encode_special(inst)),
-            ValidInstruction("cmplt", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPLT, IUSubtype.CMPLTI) if inst.get_dtype_modifiers()[0].value == "int32" else None),
+            ValidInstruction("cmplt", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPLT, IUSubtype.CMPLTI)),
+            ValidInstruction("cmpne", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPNE, IUSubtype.CMPNEI)),
+            ValidInstruction("max", [[ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER]], lambda inst: self.encode_iu_alu(inst, IUSubtype.MAX, IUSubtype.MAX)),
         ]
 
 class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
@@ -234,6 +237,9 @@ class AssemblerBranchUnit(AssemblerExecutionUnit):
         dest_addr = self.label_addresses.get(label_mod.value, None)
         assert dest_addr is not None, f"Label not found: {label_mod.value}"
         offset = dest_addr - (inst.addr + 1)
+        print(f"Branch from address {inst.addr} to label {label_mod.value} at address {dest_addr} with offset {offset}")
+        assert -128 <= offset <= 127, "Branch offset out of range"
+        offset = offset & 0xFF
 
         cond_mods = inst.get_condition_modifiers()
         assert len(cond_mods) == 1, "Branch instruction must have exactly one condition"

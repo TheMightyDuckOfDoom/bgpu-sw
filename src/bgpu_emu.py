@@ -104,10 +104,10 @@ class CU:
             self.regs[tidx][dst] = self.regs[tidx][op2] * op1
         elif instruction == IUSubtype.CMPLT:
             print(f"Thread {tidx} CMPLT: r{op2}={self.regs[tidx][op2]} < r{op1}={self.regs[tidx][op1]}")
-            op1_se = self.regs[tidx][op1] if self.regs[tidx][op1] < 0x80000000 else self.regs[tidx][op1] - 0x100000000
-            op2_se = self.regs[tidx][op2] if self.regs[tidx][op2] < 0x80000000 else self.regs[tidx][op2] - 0x100000000
-            print(f"Thread {tidx} CMPLT signed values: r{op2}={op2_se} < r{op1}={op1_se}")
-            self.regs[tidx][dst] = 1 if op2_se < op1_se else 0
+            self.regs[tidx][dst] = 1 if self.regs[tidx][op2] < self.regs[tidx][op1] else 0
+        elif instruction == IUSubtype.CMPNE:
+            print(f"Thread {tidx} CMPNE: r{op2}={self.regs[tidx][op2]} != r{op1}={self.regs[tidx][op1]}")
+            self.regs[tidx][dst] = 1 if self.regs[tidx][op2] != self.regs[tidx][op1] else 0
         else:
             raise ValueError(f"Unknown IU instruction: {instruction}") 
 
@@ -233,6 +233,10 @@ class CU:
     def execute_bru(self, instruction, dst, op1, op2, tidx):
         print(f"Executing BRU instruction: {instruction}, Dst=r{dst}, Op2={op2}, Op1={op1}")
 
+        # sign extend op1 from 8 bits
+        if op1 & 0x80:
+            op1 = -((~op1 & 0xFF) + 1)
+
         if instruction == BRUSubtype.SYNC_THREADS:
             print("Syncing threads...")
             # Set this thread as syncing
@@ -252,6 +256,13 @@ class CU:
                 self.pc[tidx] += (op1 + 1) * 4
             else:
                 print(f"BRZ not taken: r{op2}={self.regs[tidx][op2]} != 0, continuing")
+                self.pc[tidx] += 4
+        elif instruction == BRUSubtype.BRNZ:
+            if self.regs[tidx][op2] != 0:
+                print(f"BRNZ taken: r{op2}={self.regs[tidx][op2]} != 0, jumping to pc+1+{op1}")
+                self.pc[tidx] += (op1 + 1) * 4
+            else:
+                print(f"BRNZ not taken: r{op2}={self.regs[tidx][op2]} == 0, continuing")
                 self.pc[tidx] += 4
         else:
             raise ValueError(f"Unknown BRU instruction: {instruction}") 
@@ -315,5 +326,3 @@ class CU:
                     break
 
         return self.reg_trace
-
-        raise Exception(f"PC out of bounds: {self.pc:#010x}")
