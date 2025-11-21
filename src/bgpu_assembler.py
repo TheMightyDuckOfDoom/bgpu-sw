@@ -19,11 +19,13 @@ class ValidInstruction:
             return False
 
         found_mod_groups = [0 for _ in self.allowed_modifiers]
-        for mod in parsed_inst.modifiers:
+        for midx, mod in enumerate(parsed_inst.modifiers):
             for idx, required_mods in enumerate(self.allowed_modifiers):
                 for req_mod_ty in required_mods:
                     if mod.type == req_mod_ty:
                         found_mod_groups[idx] += 1
+                        if midx != idx:
+                            return False
                         break
 
         # Check if all required modifier groups are found
@@ -174,6 +176,7 @@ class AssemblerIntegerUnit(AssemblerExecutionUnit):
             ValidInstruction("or", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.OR, IUSubtype.ORI)),
             ValidInstruction("xor", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.XOR, IUSubtype.XORI)),
             ValidInstruction("mul", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.MUL, IUSubtype.MULI)),
+            ValidInstruction("idiv", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.DIV, IUSubtype.DIVI)),
             ValidInstruction("special", [], [OperandType.REGISTER, OperandType.SPECIAL], lambda inst: self.encode_special(inst)),
             ValidInstruction("cmplt", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPLT, IUSubtype.CMPLTI)),
             ValidInstruction("cmpne", [[ModifierType.REGISTER_IMMEDIATE, ModifierType.REGISTER_REGISTER], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, [OperandType.REGISTER, OperandType.INT_IMMEDIATE]], lambda inst: self.encode_iu_alu(inst, IUSubtype.CMPNE, IUSubtype.CMPNEI)),
@@ -220,7 +223,7 @@ class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
             ValidInstruction("ldparam", [], [OperandType.REGISTER, OperandType.INT_IMMEDIATE],
                 lambda inst: encode_subtype(LSUSubtype.LOAD_PARAM) | encode_dest_reg(inst.operands[0]) | encode_large_immediate(inst.operands[1])),
             ValidInstruction("ld", [[ModifierType.IDTYPE, ModifierType.FDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_ld(inst)),
-            ValidInstruction("st", [[ModifierType.IDTYPE, ModifierType.FDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_st(inst)),
+            ValidInstruction("st", [[ModifierType.IDTYPE, ModifierType.FDTYPE, ModifierType.BDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_st(inst)),
         ]
 
 class AssemblerBranchUnit(AssemblerExecutionUnit):
@@ -277,6 +280,8 @@ class AssemblerFPUnit(AssemblerExecutionUnit):
             ValidInstruction("log2", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FLOG2)),
             ValidInstruction("recip", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FRECIP)),
             ValidInstruction("cmplt", [[ModifierType.REGISTER_REGISTER], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[2], 0) | encode_subtype(FPUSubtype.FCMPLT)),
+            ValidInstruction("cast", [[ModifierType.FDTYPE], [ModifierType.IDTYPE, ModifierType.BDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FCAST_FROM_INT)),
+            ValidInstruction("cast", [[ModifierType.IDTYPE, ModifierType.BDTYPE], [ModifierType.FDTYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: encode_dest_reg(inst.operands[0]) | encode_register(inst.operands[1], 1) | encode_register(inst.operands[1], 0) | encode_subtype(FPUSubtype.FCAST_TO_INT)),
         ]
 
 class BGPUAssembler():

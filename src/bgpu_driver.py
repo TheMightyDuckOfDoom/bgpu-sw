@@ -25,8 +25,8 @@ class EmulatorMemory:
         assert src_size <= dest_size, "Source data is larger than allocated buffer."
         self.mem[addr:addr+src_size] = src
 
-        for idx, data in enumerate(self.mem[addr:addr+src_size]):
-            print(f"{idx}: {data}")
+        # for idx, data in enumerate(self.mem[addr:addr+src_size]):
+        #     print(f"{idx}: {data}")
 
         print(f"Copied data to device memory at address {addr:#010x}.")
 

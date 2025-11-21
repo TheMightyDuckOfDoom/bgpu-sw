@@ -85,7 +85,7 @@ class Modifier:
             return 4
         elif self.value == "int16" or self.value == "uint16":
             return 2
-        elif self.value == "int8" or self.value == "uint8":
+        elif self.value == "int8" or self.value == "uint8" or self.value == "bool":
             return 1
         else:
             assert False, f"Unknown data type modifier: {self.value}"

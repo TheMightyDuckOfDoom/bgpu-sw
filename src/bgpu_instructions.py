@@ -32,6 +32,8 @@ class IUSubtype(Enum):
     CMPNEI = 0x19
 
     MAX = 0x1A
+    DIV = 0x1B
+    DIVI = 0x1C
 
 class LSUSubtype(Enum):
     LOAD_BYTE = 0x00
@@ -53,6 +55,8 @@ class FPUSubtype(Enum):
     FLOG2 = 0x05
     FRECIP = 0x06
     FCMPLT = 0x07
+    FCAST_FROM_INT = 0x08
+    FCAST_TO_INT = 0x09
 
 class BRUSubtype(Enum):
     BRNZ = 0x00
