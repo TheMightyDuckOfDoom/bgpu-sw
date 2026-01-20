@@ -7,25 +7,74 @@ import math
 import os
 cu_debug = os.getenv("BGPU_CU_DEBUG", "0") == "1"
 
-class CU:
+class EmuMemory:
+    def __init__(self):
+        self.mem = []
+        self.allocations = []
+
+    def alloc(self, size: int):
+        print(f"Allocating {size} bytes of BGPU memory.")
+        # Find next available address -> outside memory
+        addr = len(self.mem)
+        # Expand memory
+        size_in_mem = size + (4 - (size % 4)) % 4  # align to 4 bytes
+        self.mem.extend([0] * size_in_mem)
+        # Record allocation
+        buf = (addr, size)
+        self.allocations.append(buf)
+        print(f"Allocated buffer at address {addr:#010x} of size {size} bytes.")
+        return buf
+
+    def copy_h2d(self, dest, src:memoryview):
+        addr, dest_size = dest
+        print(f"Copying {len(src)} bytes from host to device at address {addr:#010x}.")
+        src_size = len(src)
+        assert src_size <= dest_size, "Source data is larger than allocated buffer."
+        self.mem[addr:addr+src_size] = src
+
+        # for idx, data in enumerate(self.mem[addr:addr+src_size]):
+        #     print(f"{idx}: {data}")
+
+        print(f"Copied data to device memory at address {addr:#010x}.")
+
+    def copy_d2h(self, dest:memoryview, src):
+        addr, src_size = src
+        print(f"Copying {len(dest)} bytes from device at address {addr:#010x} to host.")
+        dest_len = len(dest)
+        assert dest_len <= src_size, "Destination buffer is smaller than source data."
+        for idx, data in enumerate(self.mem[addr:addr+dest_len]):
+            dest[idx] = data
+        print(f"Copied data from device memory at address {addr:#010x} to host.")
+
+    def get_memory(self):
+        return self.mem
+class BgpuEmu:
     def __init__(self, warp_width=4):
         self.pc = [0] * warp_width # one pc per thread
         self.stopped = [False] * warp_width
         self.syncing = [False] * warp_width
         self.dp_addr = 0
         self.tb_id = 0
+        self.tb_size = 0
         self.num_regs = 256 # per thread
         self.regs = [[int32(0)] * self.num_regs for _ in range(warp_width)]
         self.warp_width = warp_width
 
         self.reg_trace = {}
 
-    def dispatch_and_execute(self, pc, dp_addr, tblocks_to_dispatch, tgroup_id, memory):
-        print(f"Dispatching and executing: PC={pc:#010x}, DP_ADDR={dp_addr:#010x}, TBlocks={tblocks_to_dispatch}, TGroupID={tgroup_id}")
+    def dispatch_and_execute(self, pc, dp_addr, tblock_size, tblocks_to_dispatch, tgroup_id, memory):
+        print(f"Dispatching and executing: PC={pc:#010x}, DP_ADDR={dp_addr:#010x}, TblockSize={tblock_size}, Tblocks={tblocks_to_dispatch}, TGroupID={tgroup_id}")
+        self.tb_size = tblock_size
+
+        assert tblock_size <= self.warp_width, "TBlock size exceeds warp width"
         
+        report_interval = tblocks_to_dispatch // 100 if tblocks_to_dispatch >= 100 else 1
         reg_traces_per_tblock = {}
         for tb in range(tblocks_to_dispatch):
-            print(f"Executing TBlock {tb} with TGroupID {tgroup_id}")
+            if cu_debug:
+                print(f"Executing TBlock {tb} with TGroupID {tgroup_id}")
+            elif (tb % report_interval) == 0:
+                print(f"  Executing TBlock {tb}/{tblocks_to_dispatch} ({(tb / tblocks_to_dispatch) * 100:.2f}%)")
             self.pc = [pc] * self.warp_width
             self.stopped = [False] * self.warp_width
             self.syncing = [False] * self.warp_width
@@ -78,8 +127,6 @@ class CU:
             self.regs[tidx][dst] = self.tb_id
         elif instruction == IUSubtype.TBID:
             self.regs[tidx][dst] = self.tb_id * self.warp_width + i
-        elif instruction == IUSubtype.DPA:
-            self.regs[tidx][dst] = self.dp_addr
         elif instruction == IUSubtype.ADD:
             self.regs[tidx][dst] = self.regs[tidx][op2] + self.regs[tidx][op1]
         elif instruction == IUSubtype.ADDI:
@@ -132,6 +179,10 @@ class CU:
                 except Exception as e:
                     print(f"Error in DIV: r{op2}={self.regs[tidx][op2]}, r{op1}={self.regs[tidx][op1]}")
                     raise e
+        elif instruction == IUSubtype.MAX:
+            if cu_debug:
+                print(f"Thread {tidx} MAX: r{op2}={self.regs[tidx][op2]} , r{op1}={self.regs[tidx][op1]}")
+            self.regs[tidx][dst] = self.regs[tidx][op2] if self.regs[tidx][op2] > self.regs[tidx][op1] else self.regs[tidx][op1]
         else:
             raise ValueError(f"Unknown IU instruction: {instruction}") 
         
@@ -358,7 +409,7 @@ class CU:
 
         all_stopped = False
         while not all_stopped:
-            for tidx in range(self.warp_width):
+            for tidx in range(self.tb_size):
                 instruction = self.read_instruction_memory(memory, self.pc[tidx])
                 if cu_debug:
                     print(f"Thread {tidx} Executing instruction at PC={self.pc[tidx]:#010x}: {instruction:#010x}")

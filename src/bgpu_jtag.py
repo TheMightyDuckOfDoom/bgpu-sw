@@ -239,6 +239,7 @@ class BGPUEmu:
         self.te_base = 0xFFFFFF00
         self.te_pc = 0
         self.te_dp_addr = 0
+        self.te_tblock_size = 0
         self.te_tblocks_to_dispatch = 0
         self.te_tgroup_id = 0
         self.te_status = 0
@@ -260,7 +261,7 @@ class BGPUEmu:
             self.memory[address + 3] = (data >> 24) & 0xFF
             return
 
-        if address >= self.te_base and address < self.te_base + 5 * 4:
+        if address >= self.te_base and address < self.te_base + 6 * 4:
             # print(f"Writing to thread engine base address {self.te_base:#010x}")
             if address == self.te_base + 0 * 4:
                 self.te_pc = data
@@ -271,10 +272,13 @@ class BGPUEmu:
             elif address == self.te_base + 3 * 4:
                 self.te_tgroup_id = data
             elif address == self.te_base + 4 * 4:
+                self.te_tblock_size = data
+            elif address == self.te_base + 5 * 4:
                 # Execute the dispatch
                 self.cu.dispatch_and_execute(
                     self.te_pc,
                     self.te_dp_addr,
+                    self.te_tblock_size,
                     self.te_tblocks_to_dispatch,
                     self.te_tgroup_id,
                     self.memory
@@ -296,7 +300,7 @@ class BGPUEmu:
             # print(f"Reading from address {address:#010x}: {value:#010x}")
             return value
 
-        if address >= self.te_base and address < self.te_base + 5 * 4:
+        if address >= self.te_base and address < self.te_base + 6 * 4:
             # print(f"Reading from thread engine base address {self.te_base:#010x}")
             if address == self.te_base + 0 * 4:
                 return self.te_pc
@@ -307,6 +311,8 @@ class BGPUEmu:
             elif address == self.te_base + 3 * 4:
                 return self.te_tgroup_id
             elif address == self.te_base + 4 * 4:
+                return self.te_tblock_size
+            elif address == self.te_base + 5 * 4:
                 return self.te_status
 
         raise ValueError(f"Invalid address {address:#010x}")
@@ -389,6 +395,7 @@ else:
     con = GDB()
 
 bgpu = BGPU(con)
+raise NotImplementedError("TODO: Thread block size not implemented")
 
 running = bgpu.dispatch_status()[1]
 assert not running, "GPU is already running, please stop it first."

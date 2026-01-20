@@ -221,7 +221,7 @@ class AssemblerLoadStoreUnit(AssemblerExecutionUnit):
         self.eu_enc = 1
         self.instructions = [
             ValidInstruction("ldparam", [], [OperandType.REGISTER, OperandType.INT_IMMEDIATE],
-                lambda inst: encode_subtype(LSUSubtype.LOAD_PARAM) | encode_dest_reg(inst.operands[0]) | encode_large_immediate(inst.operands[1])),
+                lambda inst: encode_subtype(LSUSubtype.LOAD_PARAM) | encode_dest_reg(inst.operands[0]) | encode_small_immediate(inst.operands[1])),
             ValidInstruction("ld", [[ModifierType.IDTYPE, ModifierType.FDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_ld(inst)),
             ValidInstruction("st", [[ModifierType.IDTYPE, ModifierType.FDTYPE, ModifierType.BDTYPE], [ModifierType.MEMORY_TYPE]], [OperandType.REGISTER, OperandType.REGISTER], lambda inst: self.encode_st(inst)),
         ]
@@ -358,62 +358,72 @@ class BGPUAssembler():
         return machine_code
 
 example_asm = """
-E_4:
-	ldparam.int32   r0, 0 # define global
-	ldparam.int32   r1, 1 # define global
-	ldparam.int32   r2, 2 # define global
-	mov.ri.int32	  r3, 0 # constant
-	mov.ri.int32	  r4, 1 # constant
-	mov.ri.int32	  r5, 2 # constant
-	mov.ri.int32	  r6, 3 # constant
-	shl.ri.int32		  r7,   r3, 2 # index shift
-	add.rr.int32		  r7,   r1,   r7 # index
-	ld.int32.global		  r8,   r7
-	shl.ri.int32		  r9,   r4, 2 # index shift
-	add.rr.int32		  r9,   r1,   r9 # index
-	ld.int32.global		 r10,   r9
-	shl.ri.int32		 r11,   r5, 2 # index shift
-	add.rr.int32		 r11,   r1,  r11 # index
-	ld.int32.global		 r12,  r11
-	shl.ri.int32		 r13,   r6, 2 # index shift
-	add.rr.int32		 r13,   r1,  r13 # index
-	ld.int32.global		 r14,  r13
-	shl.ri.int32		 r15,   r3, 2 # index shift
-	add.rr.int32		 r15,   r2,  r15 # index
-	ld.int32.global		 r16,  r15
-	shl.ri.int32		 r17,   r4, 2 # index shift
-	add.rr.int32		 r17,   r2,  r17 # index
-	ld.int32.global		 r18,  r17
-	shl.ri.int32		 r19,   r5, 2 # index shift
-	add.rr.int32		 r19,   r2,  r19 # index
-	ld.int32.global		 r20,  r19
-	shl.ri.int32		 r21,   r6, 2 # index shift
-	add.rr.int32		 r21,   r2,  r21 # index
-	ld.int32.global		 r22,  r21
-	shl.ri.int32		 r23,   r3, 2 # index shift
-	add.rr.int32		 r23,   r0,  r23 # index
-	shl.ri.int32		 r24,   r4, 2 # index shift
-	add.rr.int32		 r24,   r0,  r24 # index
-	shl.ri.int32		 r25,   r5, 2 # index shift
-	add.rr.int32		 r25,   r0,  r25 # index
-	shl.ri.int32		 r26,   r6, 2 # index shift
-	add.rr.int32		 r26,   r0,  r26 # index
-	shl.rr.int32		 r27,  r16,   r4
-	add.rr.int32		 r28,   r8,  r27
-	st.int32.global		 r23,  r28
-	shl.rr.int32		 r29,  r18,   r4
-	add.rr.int32		 r30,  r10,  r29
-	st.int32.global		 r24,  r30
-	shl.rr.int32		 r31,  r20,   r4
-	add.rr.int32		 r32,  r12,  r31
-	st.int32.global		 r25,  r32
-	shl.rr.int32		 r33,  r22,   r4
-	add.rr.int32		 r34,  r14,  r33
-	st.int32.global		 r26,  r34
-	stop
+E_16_4_4: # pred: 
+        ldparam.int32 r0, 0
+        ldparam.int32 r1, 1
+        ldparam.int32 r2, 2
+        mov.ri.int32 r3, 1
+        mov.ri.int32 r4, 2
+        mov.ri.int32 r5, 3
+        mov.ri.int32 r6, 4
+        mov.ri.int32 r7, 16
+        special r8, %g
+        special r9, %l
+        mul.rr.int32 r10, r8, r7
+        mul.rr.int32 r7, r9, r6
+        add.rr.int32 r6, r10, r7
+        add.rr.int32 r7, r6, r3
+        shl.ri.int32 r3, r7, 2
+        add.rr.int32 r3, r1, r3
+        ld.int32.global r8, r3
+        add.rr.int32 r3, r6, r4
+        shl.ri.int32 r4, r3, 2
+        add.rr.int32 r4, r1, r4
+        ld.int32.global r9, r4
+        add.rr.int32 r4, r6, r5
+        shl.ri.int32 r5, r4, 2
+        add.rr.int32 r5, r1, r5
+        ld.int32.global r10, r5
+        shl.ri.int32 r5, r6, 2
+        add.rr.int32 r5, r1, r5
+        ld.int32.global r1, r5
+        shl.ri.int32 r5, r7, 2
+        add.rr.int32 r5, r2, r5
+        ld.int32.global r11, r5
+        shl.ri.int32 r5, r3, 2
+        add.rr.int32 r5, r2, r5
+        ld.int32.global r12, r5
+        shl.ri.int32 r5, r4, 2
+        add.rr.int32 r5, r2, r5
+        ld.int32.global r13, r5
+        shl.ri.int32 r5, r6, 2
+        add.rr.int32 r5, r2, r5
+        ld.int32.global r2, r5
+        shl.ri.int32 r5, r7, 2
+        add.rr.int32 r5, r0, r5
+        shl.ri.int32 r7, r3, 2
+        add.rr.int32 r7, r0, r7
+        shl.ri.int32 r3, r4, 2
+        add.rr.int32 r3, r0, r3
+        shl.ri.int32 r4, r6, 2
+        add.rr.int32 r4, r0, r4
+        add.rr.int32 r0, r8, r11
+        add.rr.int32 r6, r9, r12
+        add.rr.int32 r8, r10, r13
+        add.rr.int32 r9, r1, r2
+        st.int32.global r5, r0
+        st.int32.global r7, r6
+        st.int32.global r3, r8
+        st.int32.global r4, r9
+        stop
 """
 
 if __name__ == "__main__":
     print("Assembling example ASM code...")
     code = BGPUAssembler().assemble_lines(example_asm.splitlines())
     print("Done.")
+
+    for i in range(0, len(code), 4):
+        word = int.from_bytes(code[i:i+4], byteorder='little')
+        print(f"'h{word:08X},")
+
