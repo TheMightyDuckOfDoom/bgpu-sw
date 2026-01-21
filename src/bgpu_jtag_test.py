@@ -275,16 +275,8 @@ assert not running, "GPU is already running, please stop it first."
 #     print(f"Program {i}: {value:#010x} (expected {prog[i]:#010x})")
 
 offset = 0
-print("Writing program to memory:")
-for inst in prog:
-    print(f"{offset:#010x} = {inst:#010x}")
-    try:
-        con.write(offset, inst)
-    except ValueError as e:
-        print(f"Error writing instruction {inst:#010x} at offset {offset:#010x}: {e}")
-    offset += 4
-
 print("Writing data to memory:")
+matrix_start = offset
 for j in range(3):
     print(f"Matrix {j}:")
     for i in range(DataPerMatrix):
@@ -293,22 +285,36 @@ for j in range(3):
         con.write(offset, data)
         offset += 4
 
+print("Writing program to memory:")
+pc_start = offset
+for inst in prog:
+    print(f"{offset:#010x} = {inst:#010x}")
+    try:
+        con.write(offset, inst)
+    except ValueError as e:
+        print(f"Error writing instruction {inst:#010x} at offset {offset:#010x}: {e}")
+    offset += 4
+
 print("Writing matrix addresses to memory:")
 dp_address = offset
 for j in range(3):
-    matrix_address = (len(prog) + j * DataPerMatrix) * 4
+    matrix_address = matrix_start + j * DataPerMatrix * 4
     print(f"Matrix {j} address: {matrix_address:#010x}, {offset:#010x} = {matrix_address:#010x}")
     con.write(offset, matrix_address)
     offset += 4
 
 print("Dispatching threads...")
-bgpu.dispatch_threads(0, dp_address, TblockSize, Tblocks, 42, inorder)
+bgpu.dispatch_threads(pc_start, dp_address, TblockSize, Tblocks, 42, inorder)
 
-bgpu.dispatch_status()
+print("Waiting for completion...")
+while True:
+    start_dispatch, running, finished, num_dispatched, num_finished = bgpu.dispatch_status()
+    if finished:
+        break
 
 print("Checking program:")
 for i in range(len(prog)):
-    value = con.read(i * 4)
+    value = con.read(pc_start + i * 4)
     if value != prog[i]:
         print(f"Program mismatch at {i}: expected {prog[i]:#010x}, got {value:#010x}")
     else:
@@ -318,5 +324,5 @@ print("Reading back data from memory:")
 for j in range(3):
     print(f"Matrix {j}:")
     for i in range(DataPerMatrix):
-        value = con.read((len(prog) + j * DataPerMatrix + i) * 4)
+        value = con.read(matrix_start + j * DataPerMatrix * 4 + i * 4)
         print(f"{i}: {value:#010x}")

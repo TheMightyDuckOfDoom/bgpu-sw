@@ -86,7 +86,8 @@ class CU:
         elif instruction == IUSubtype.BID:
             self.regs[tidx][dst] = self.tb_id
         elif instruction == IUSubtype.TBID:
-            self.regs[tidx][dst] = self.tb_id * self.warp_width + i
+            # self.regs[tidx][dst] = self.tb_id * self.warp_width + i
+            raise NotImplementedError("TBID not fully implemented")
         elif instruction == IUSubtype.ADD:
             self.regs[tidx][dst] = self.regs[tidx][op2] + self.regs[tidx][op1]
         elif instruction == IUSubtype.ADDI:

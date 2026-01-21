@@ -17,8 +17,10 @@ class Bgpu:
 
     def dispatch_threads(self, pc, dp_addr, tblock_size, tblocks_to_dispatch, tgroup_id, inorder):
         print(f"Dispatching threads: PC={pc:#010x}, DP_ADDR={dp_addr:#010x}, TBlockSize={tblock_size}, TBlocks={tblocks_to_dispatch}, TGroupID={tgroup_id}")
-        self.write_thread_engine_register(0, pc)
-        self.write_thread_engine_register(1, dp_addr)
+        assert pc % 4 == 0, "PC must be word-aligned."
+        assert dp_addr % 4 == 0, "Data pointer address must be word-aligned."
+        self.write_thread_engine_register(0, pc // 4) # PC in words
+        self.write_thread_engine_register(1, dp_addr) # Data pointer address in bytes
         self.write_thread_engine_register(2, tblocks_to_dispatch)
         self.write_thread_engine_register(3, tgroup_id)
         self.write_thread_engine_register(4, tblock_size)
@@ -28,7 +30,7 @@ class Bgpu:
         self.write_thread_engine_register(5, 1 if inorder else 0, check=False)
 
     def dispatch_status(self):
-        status = self.read_thread_engine_register(4)
+        status = self.read_thread_engine_register(5)
         status_bin = bin(status)[2:].zfill(32)
 
         print(f"Dispatch status: {status:#010x} ({status_bin})")
@@ -75,6 +77,7 @@ class BgpuMemManager:
         assert src_size % 4 == 0, "Source data size must be a multiple of 4 bytes."
         for i in range(src_size // 4):
             data = int.from_bytes(src[i*4:i*4+4], byteorder='little')
+            print(f"Writing data to device memory at address {addr + i * 4:#010x}: {data:#010x}")
             self.con.write(addr + i * 4, data)
 
         print(f"Copied data to device memory at address {addr:#010x}.")
@@ -141,9 +144,16 @@ class BGPUDriver:
         # Execute kernel
         tblock_size = local_size[0]
         num_blocks = global_size[0]
+        self.bgpu.dispatch_status()
         print(f"Executing kernel with tblock size: {tblock_size}")
 
         self.bgpu.dispatch_threads(kernel_address, parameter_address, tblock_size, num_blocks, 0, inorder=True)
+
+        print("Waiting for completion...")
+        while True:
+            start_dispatch, running, finished, num_dispatched, num_finished = self.bgpu.dispatch_status()
+            if finished:
+                break
 
         print("Kernel execution completed.")
 
