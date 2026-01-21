@@ -7,48 +7,7 @@ import math
 import os
 cu_debug = os.getenv("BGPU_CU_DEBUG", "0") == "1"
 
-class EmuMemory:
-    def __init__(self):
-        self.mem = []
-        self.allocations = []
-
-    def alloc(self, size: int):
-        print(f"Allocating {size} bytes of BGPU memory.")
-        # Find next available address -> outside memory
-        addr = len(self.mem)
-        # Expand memory
-        size_in_mem = size + (4 - (size % 4)) % 4  # align to 4 bytes
-        self.mem.extend([0] * size_in_mem)
-        # Record allocation
-        buf = (addr, size)
-        self.allocations.append(buf)
-        print(f"Allocated buffer at address {addr:#010x} of size {size} bytes.")
-        return buf
-
-    def copy_h2d(self, dest, src:memoryview):
-        addr, dest_size = dest
-        print(f"Copying {len(src)} bytes from host to device at address {addr:#010x}.")
-        src_size = len(src)
-        assert src_size <= dest_size, "Source data is larger than allocated buffer."
-        self.mem[addr:addr+src_size] = src
-
-        # for idx, data in enumerate(self.mem[addr:addr+src_size]):
-        #     print(f"{idx}: {data}")
-
-        print(f"Copied data to device memory at address {addr:#010x}.")
-
-    def copy_d2h(self, dest:memoryview, src):
-        addr, src_size = src
-        print(f"Copying {len(dest)} bytes from device at address {addr:#010x} to host.")
-        dest_len = len(dest)
-        assert dest_len <= src_size, "Destination buffer is smaller than source data."
-        for idx, data in enumerate(self.mem[addr:addr+dest_len]):
-            dest[idx] = data
-        print(f"Copied data from device memory at address {addr:#010x} to host.")
-
-    def get_memory(self):
-        return self.mem
-class BgpuEmu:
+class CU:
     def __init__(self, warp_width=4):
         self.pc = [0] * warp_width # one pc per thread
         self.stopped = [False] * warp_width
@@ -67,6 +26,7 @@ class BgpuEmu:
         self.tb_size = tblock_size
 
         assert tblock_size <= self.warp_width, "TBlock size exceeds warp width"
+        assert tblock_size > 0, "TBlock size must be greater than zero"
         
         report_interval = tblocks_to_dispatch // 100 if tblocks_to_dispatch >= 100 else 1
         reg_traces_per_tblock = {}
@@ -448,9 +408,92 @@ class BgpuEmu:
 
             # Check if all threads have stopped
             all_stopped = True
-            for tidx in range(self.warp_width):
+            for tidx in range(self.tb_size):
                 if not self.stopped[tidx]:
                     all_stopped = False
                     break
 
         return self.reg_trace
+
+class EmuJtag:
+    def __init__(self, memory_size=1 << 16, warp_width=4):
+        self.te_base = 0xFFFFFF00
+        self.te_pc = 0
+        self.te_dp_addr = 0
+        self.te_tblock_size = 0
+        self.te_tblocks_to_dispatch = 0
+        self.te_tgroup_id = 0
+        self.te_status = 0
+
+        # Byte addressable memory
+        self.memory = [0] * memory_size
+
+        self.cu = CU(warp_width)
+
+    def write(self, address, data, check=True):
+        if address % 4 != 0:
+            raise ValueError(f"Unaligned memory access at address {address:#010x}")
+
+        if address >= 0 and address + 3 < len(self.memory):
+            # print(f"Writing to address {address:#010x}: {data:#010x}")
+            self.memory[address] = data & 0xFF
+            self.memory[address + 1] = (data >> 8) & 0xFF
+            self.memory[address + 2] = (data >> 16) & 0xFF
+            self.memory[address + 3] = (data >> 24) & 0xFF
+            return
+
+        if address >= self.te_base and address < self.te_base + 6 * 4:
+            # print(f"Writing to thread engine base address {self.te_base:#010x}")
+            if address == self.te_base + 0 * 4:
+                self.te_pc = data
+            elif address == self.te_base + 1 * 4:
+                self.te_dp_addr = data
+            elif address == self.te_base + 2 * 4:
+                self.te_tblocks_to_dispatch = data
+            elif address == self.te_base + 3 * 4:
+                self.te_tgroup_id = data
+            elif address == self.te_base + 4 * 4:
+                self.te_tblock_size = data
+            elif address == self.te_base + 5 * 4:
+                # Execute the dispatch
+                self.cu.dispatch_and_execute(
+                    self.te_pc,
+                    self.te_dp_addr,
+                    self.te_tblock_size,
+                    self.te_tblocks_to_dispatch,
+                    self.te_tgroup_id,
+                    self.memory
+                )
+                # Update the status
+                self.te_status |= 1 << 2 # Finished bit
+                self.te_status |= self.te_tblocks_to_dispatch << 4 # Number of dispatched TBlocks
+                self.te_status |= self.te_tblocks_to_dispatch << 24 # Number of finished TBlocks
+            return
+
+        raise ValueError(f"Invalid address {address:#010x} for write operation, max_memory address is {len(self.memory) - 1:#010x}")
+
+    def read(self, address):
+        if address % 4 != 0:
+            raise ValueError(f"Unaligned memory access at address {address:#010x}")
+
+        if address >= 0 and address + 3 < len(self.memory):
+            value = self.memory[address] | (self.memory[address + 1] << 8) | (self.memory[address + 2] << 16) | (self.memory[address + 3] << 24)
+            # print(f"Reading from address {address:#010x}: {value:#010x}")
+            return value
+
+        if address >= self.te_base and address < self.te_base + 6 * 4:
+            # print(f"Reading from thread engine base address {self.te_base:#010x}")
+            if address == self.te_base + 0 * 4:
+                return self.te_pc
+            elif address == self.te_base + 1 * 4:
+                return self.te_dp_addr
+            elif address == self.te_base + 2 * 4:
+                return self.te_tblocks_to_dispatch
+            elif address == self.te_base + 3 * 4:
+                return self.te_tgroup_id
+            elif address == self.te_base + 4 * 4:
+                return self.te_tblock_size
+            elif address == self.te_base + 5 * 4:
+                return self.te_status
+
+        raise ValueError(f"Invalid address {address:#010x}")
